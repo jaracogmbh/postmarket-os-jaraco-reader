@@ -3,12 +3,12 @@
 
 pkgname=jaraco-reader
 pkgver=0.1.0
-pkgrel=7
+pkgrel=11
 pkgdesc="Simple EPUB reader for postmarketOS"
 url="https://example.invalid/jaraco-reader"
 arch="noarch"
 license="MIT"
-depends="python3 py3-gobject3 gtk+3.0 webkit2gtk-4.1"
+depends="python3 py3-gobject3 py3-markdown gtk+3.0 webkit2gtk-4.1"
 makedepends=""
 source=""
 builddir="$startdir"
@@ -22,4 +22,6 @@ package() {
 		"$pkgdir/usr/share/metainfo/io.jaraco.Reader.appdata.xml"
 	install -Dm644 "$startdir/data/io.jaraco.Reader.svg" \
 		"$pkgdir/usr/share/icons/hicolor/scalable/apps/io.jaraco.Reader.svg"
+	install -Dm644 "$startdir/data/mermaid.min.js" \
+		"$pkgdir/usr/share/jaraco-reader/mermaid.min.js"
 }

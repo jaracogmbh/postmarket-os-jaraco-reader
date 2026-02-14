@@ -15,6 +15,9 @@ gi.require_version("WebKit2", "4.1")
 
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2
 
+import markdown
+import html as html_lib
+
 APP_ID = "io.jaraco.Reader"
 CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "jaraco-reader")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "positions.json")
@@ -145,6 +148,59 @@ img {{ max-width: 100%; height: auto; }}
         return title or os.path.basename(epub_path), reader_html
 
 
+def read_markdown(md_path):
+    with open(md_path, "r", encoding="utf-8", errors="ignore") as fh:
+        md_text = fh.read()
+
+    html_body = markdown.markdown(
+        md_text,
+        extensions=[
+            "fenced_code",
+            "tables",
+            "toc",
+            "sane_lists",
+        ],
+    )
+    html_body = re.sub(
+        r'<pre><code class="language-mermaid">(.*?)</code></pre>',
+        lambda m: f'<div class="mermaid">{html_lib.unescape(m.group(1))}</div>',
+        html_body,
+        flags=re.DOTALL,
+    )
+
+    mermaid_src = "/usr/share/jaraco-reader/mermaid.min.js"
+    mermaid_tag = ""
+    if os.path.exists(mermaid_src):
+        mermaid_tag = f'<script src="file://{mermaid_src}"></script>'
+
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+body {{ margin: 24px; font-family: serif; }}
+img {{ max-width: 100%; height: auto; }}
+pre {{ overflow-x: auto; padding: 12px; background: #f6f6f6; border-radius: 8px; }}
+code {{ font-family: monospace; }}
+</style>
+{mermaid_tag}
+<script>
+document.addEventListener("DOMContentLoaded", function () {{
+  if (window.mermaid) {{
+    mermaid.initialize({{ startOnLoad: true }});
+  }}
+}});
+</script>
+</head>
+<body>
+{html_body}
+</body>
+</html>
+"""
+    return os.path.basename(md_path), html
+
+
 class ReaderWindow(Gtk.ApplicationWindow):
     def __init__(self, app, epub_path=None):
         super().__init__(application=app)
@@ -209,11 +265,11 @@ class ReaderWindow(Gtk.ApplicationWindow):
         self.webview.connect("load-changed", self._on_load_changed)
 
         if epub_path:
-            self.load_book(epub_path)
+            self.load_file(epub_path)
         else:
             last = self._positions.get("_last_book")
             if last and os.path.exists(last):
-                self.load_book(last)
+                self.load_file(last)
             else:
                 GLib.idle_add(self._prompt_open)
 
@@ -392,39 +448,50 @@ class ReaderWindow(Gtk.ApplicationWindow):
 
     def _open_dialog(self, *_):
         dialog = Gtk.FileChooserDialog(
-            title="Open EPUB",
+            title="Open file",
             parent=self,
             action=Gtk.FileChooserAction.OPEN,
         )
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         dialog.add_button("Open", Gtk.ResponseType.OK)
-        filt = Gtk.FileFilter()
-        filt.set_name("EPUB files")
-        filt.add_pattern("*.epub")
-        dialog.add_filter(filt)
+        filt_epub = Gtk.FileFilter()
+        filt_epub.set_name("EPUB files")
+        filt_epub.add_pattern("*.epub")
+        dialog.add_filter(filt_epub)
+
+        filt_md = Gtk.FileFilter()
+        filt_md.set_name("Markdown files")
+        filt_md.add_pattern("*.md")
+        filt_md.add_pattern("*.markdown")
+        dialog.add_filter(filt_md)
         response = dialog.run()
         if response == Gtk.ResponseType.OK:
             path = dialog.get_filename()
             if path:
-                self.load_book(path)
+                self.load_file(path)
         dialog.destroy()
 
-    def load_book(self, epub_path):
-        epub_path = os.path.abspath(epub_path)
+    def load_file(self, path):
+        path = os.path.abspath(path)
+        ext = os.path.splitext(path)[1].lower()
         try:
-            title, html = self._load_and_prepare_epub(epub_path)
+            if ext in [".md", ".markdown"]:
+                title, html = read_markdown(path)
+                self._book_dir = os.path.dirname(path)
+            else:
+                title, html = self._load_and_prepare_epub(path)
         except Exception as exc:
             self._title_label.set_text(f"Failed to open: {exc}")
             return
 
-        self.epub_path = epub_path
+        self.epub_path = path
         self.book_title = title
         self._title_label.set_text(title)
-        self._track_recent(epub_path)
+        self._track_recent(path)
 
         self.webview.load_html(html, f"file://{self._book_dir}")
 
-        book_state = self._positions.get(epub_path, {})
+        book_state = self._positions.get(path, {})
         self.font_size = int(book_state.get("font_size", DEFAULT_FONT_SIZE))
         self._apply_zoom()
 
@@ -460,7 +527,7 @@ class ReaderWindow(Gtk.ApplicationWindow):
     def _prompt_open(self):
         recent = [p for p in self._positions.get("_recent", []) if os.path.exists(p)]
 
-        dialog = Gtk.Dialog(title="Open an EPUB", transient_for=self, modal=True)
+        dialog = Gtk.Dialog(title="Open a file", transient_for=self, modal=True)
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         dialog.add_button("Browse", Gtk.ResponseType.OK)
 
@@ -511,7 +578,7 @@ class ReaderWindow(Gtk.ApplicationWindow):
     def _open_recent(self, dialog, path):
         dialog.destroy()
         if os.path.exists(path):
-            self.load_book(path)
+            self.load_file(path)
 
     def _on_empty_click(self, *_):
         if not self.epub_path:

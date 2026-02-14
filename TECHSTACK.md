@@ -4,6 +4,7 @@
 
 - **Python 3**: Main application logic.
 - **PyGObject (py3-gobject3)**: GObject introspection bindings for GTK and WebKit.
+- **Python Markdown (py3-markdown)**: Markdown to HTML conversion.
 - **GTK 3**: Application UI framework.
 - **WebKit2GTK 4.1**: HTML/CSS renderer for EPUB content.
 - **Adwaita Icon Theme**: Standard system icons.
@@ -30,3 +31,4 @@
 - Reading position saved as scroll fraction and restored on reopen.
 - Recent books list stored in positions JSON (max 5).
 - Tap/click on empty view opens the book selector.
+- Markdown rendered to HTML with Mermaid diagrams via bundled Mermaid JS.

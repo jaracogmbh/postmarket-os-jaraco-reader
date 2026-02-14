@@ -5,6 +5,7 @@ Jaraco Reader is a simple EPUB reader for postmarketOS built with GTK and WebKit
 ## Features
 
 - Full HTML/CSS rendering via WebKit2GTK (images supported).
+- Markdown files rendered to HTML, with Mermaid diagrams.
 - Adjustable font size (zoom in/out).
 - Page navigation with edge arrows and “Go to page” dialog.
 - Reading position and font size saved per book.
@@ -12,12 +13,30 @@ Jaraco Reader is a simple EPUB reader for postmarketOS built with GTK and WebKit
 - Tap/click empty screen to open the book selector.
 - Works in portrait and landscape.
 
+## Architecture Diagram
+
+```mermaid
+flowchart TD
+    U[User] -->|Open EPUB/MD| UI[GTK3 UI]
+    UI -->|Renders content| WV[WebKit2 WebView]
+    UI -->|Dialogs + Controls| UX[Header/Overlay/Dialogs]
+    UI -->|Loads file| LO[Loader]
+    LO -->|EPUB parse| EP[EPUB Extractor]
+    LO -->|Markdown parse| MD[Markdown Renderer]
+    EP -->|HTML + CSS + Assets| WV
+    MD -->|HTML + Mermaid JS| WV
+    UI -->|Save position| CFG[Config Store]
+    CFG -->|Restore position| UI
+    LO -->|Cache assets| CCH[Cache Dir]
+```
+
 ## Requirements
 
 Runtime dependencies (Alpine/postmarketOS):
 
 - `python3`
 - `py3-gobject3`
+- `py3-markdown`
 - `gtk+3.0`
 - `webkit2gtk-4.1`
 - `adwaita-icon-theme` (for icons)
@@ -32,7 +51,7 @@ Build dependencies:
 Install dependencies:
 
 ```bash
-apk add abuild alpine-sdk python3 py3-gobject3 gtk+3.0 webkit2gtk-4.1 adwaita-icon-theme
+apk add abuild alpine-sdk python3 py3-gobject3 py3-markdown gtk+3.0 webkit2gtk-4.1 adwaita-icon-theme
 ```
 
 Build APK:
@@ -61,7 +80,12 @@ Replace the filename if your build produced a different `-rX` revision.
 ./app/jaraco-reader /path/to/book.epub
 ```
 
-If launched without an EPUB, the app shows a recent-books list (max 5) and a Browse button.
+If launched without a file, the app shows a recent list (max 5) and a Browse button. It supports `.epub`, `.md`, and `.markdown`.
+
+Markdown Mermaid diagrams are rendered offline via a bundled `mermaid.min.js`.
+
+To enable full Mermaid rendering, replace `data/mermaid.min.js` with the official
+minified Mermaid build from the Mermaid releases page before building.
 
 ## Data Storage
 
