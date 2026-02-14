@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts
+pkg/
+srcdir/
+tmp/
+*.apk
+
+# Local caches
+.cache/
+.venv/
+.env/
+*.epub

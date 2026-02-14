@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import zipfile
+import hashlib
+import re
+from xml.etree import ElementTree as ET
+
+import gi
+
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gtk", "3.0")
+gi.require_version("WebKit2", "4.1")
+
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango, WebKit2
+
+APP_ID = "io.jaraco.Reader"
+CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "jaraco-reader")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "positions.json")
+CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "jaraco-reader")
+DEFAULT_FONT_SIZE = 16
+
+
+def _strip_ns(tag):
+    if "}" in tag:
+        return tag.split("}", 1)[1]
+    return tag
+
+
+def _normalize_path(path):
+    return os.path.normpath(path).replace("\\", "/")
+
+
+def _rewrite_relative_urls(html, base_path):
+    def repl(match):
+        attr = match.group(1)
+        url = match.group(2)
+        if url.startswith(("http://", "https://", "data:", "file://", "mailto:")):
+            return match.group(0)
+        abs_path = _normalize_path(os.path.join(base_path, url))
+        return f'{attr}="file://{abs_path}"'
+
+    return re.sub(r'(src|href)\s*=\s*"([^"]+)"', repl, html, flags=re.IGNORECASE)
+
+
+def _extract_chapter_parts(html):
+    head_styles = []
+    body_html = html
+
+    head_match = re.search(r"<head[^>]*>(.*?)</head>", html, flags=re.IGNORECASE | re.DOTALL)
+    if head_match:
+        head_html = head_match.group(1)
+        style_blocks = re.findall(r"<style[^>]*>(.*?)</style>", head_html, flags=re.IGNORECASE | re.DOTALL)
+        head_styles.extend(style_blocks)
+        body_match = re.search(r"<body[^>]*>(.*?)</body>", html, flags=re.IGNORECASE | re.DOTALL)
+        if body_match:
+            body_html = body_match.group(1)
+    return head_styles, body_html
+
+
+def read_epub(epub_path, extract_dir):
+    with zipfile.ZipFile(epub_path, "r") as zf:
+        try:
+            container = zf.read("META-INF/container.xml")
+        except KeyError:
+            raise ValueError("Invalid EPUB: missing META-INF/container.xml")
+
+        root = ET.fromstring(container)
+        rootfile = None
+        for elem in root.iter():
+            if _strip_ns(elem.tag) == "rootfile":
+                rootfile = elem.attrib.get("full-path")
+                break
+        if not rootfile:
+            raise ValueError("Invalid EPUB: missing rootfile")
+
+        opf_data = zf.read(rootfile)
+        opf = ET.fromstring(opf_data)
+
+        base_dir = os.path.dirname(rootfile)
+        manifest = {}
+        title = ""
+
+        for elem in opf.iter():
+            tag = _strip_ns(elem.tag)
+            if tag == "title" and not title:
+                if elem.text:
+                    title = elem.text.strip()
+            if tag == "item":
+                item_id = elem.attrib.get("id")
+                href = elem.attrib.get("href")
+                if item_id and href:
+                    manifest[item_id] = href
+
+        spine = []
+        for elem in opf.iter():
+            if _strip_ns(elem.tag) == "itemref":
+                item_id = elem.attrib.get("idref")
+                if item_id:
+                    spine.append(item_id)
+
+        zf.extractall(extract_dir)
+        sections = []
+        combined_styles = []
+
+        for item_id in spine:
+            href = manifest.get(item_id)
+            if not href:
+                continue
+            path = os.path.normpath(os.path.join(base_dir, href))
+            try:
+                with open(os.path.join(extract_dir, path), "r", encoding="utf-8", errors="ignore") as fh:
+                    data = fh.read()
+            except OSError:
+                continue
+
+            base_path = os.path.dirname(os.path.join(extract_dir, path))
+            data = _rewrite_relative_urls(data, base_path)
+            styles, body_html = _extract_chapter_parts(data)
+            combined_styles.extend(styles)
+            sections.append(body_html)
+
+        if not sections:
+            raise ValueError("No readable content found in EPUB")
+
+        merged_styles = "\n".join(combined_styles)
+        merged_body = "\n<hr/>".join(sections)
+        reader_html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+body {{ margin: 24px; font-family: serif; }}
+img {{ max-width: 100%; height: auto; }}
+{merged_styles}
+</style>
+</head>
+<body>
+{merged_body}
+</body>
+</html>
+"""
+        return title or os.path.basename(epub_path), reader_html
+
+
+class ReaderWindow(Gtk.ApplicationWindow):
+    def __init__(self, app, epub_path=None):
+        super().__init__(application=app)
+        self.set_title("Jaraco Reader")
+        self.set_default_size(600, 900)
+
+        self.epub_path = None
+        self.book_title = None
+        self.font_size = DEFAULT_FONT_SIZE
+        self._pending_save = None
+        self._positions = self._load_positions()
+        self._poll_id = None
+        self._book_dir = None
+
+        self.webview = WebKit2.WebView()
+        settings = self.webview.get_settings()
+        if settings is not None:
+            settings.set_enable_javascript(True)
+            try:
+                settings.set_allow_file_access_from_file_urls(True)
+            except (AttributeError, TypeError):
+                pass
+        self.webview.set_vexpand(True)
+        self.webview.set_hexpand(True)
+        self.webview.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.webview.connect("button-press-event", self._on_empty_click)
+
+        overlay = Gtk.Overlay()
+        overlay.add(self.webview)
+        overlay.add_overlay(self._build_side_button("go-previous-symbolic", self._page_prev, Gtk.Align.START))
+        overlay.add_overlay(self._build_side_button("go-next-symbolic", self._page_next, Gtk.Align.END))
+
+        header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+
+        open_btn = Gtk.Button.new_from_icon_name("document-open-symbolic", Gtk.IconSize.BUTTON)
+        open_btn.connect("clicked", self._open_dialog)
+        header.pack_start(open_btn)
+
+        zoom_out = Gtk.Button.new_from_icon_name("zoom-out-symbolic", Gtk.IconSize.BUTTON)
+        zoom_out.connect("clicked", lambda *_: self._adjust_font(-1))
+        header.pack_start(zoom_out)
+
+        zoom_in = Gtk.Button.new_from_icon_name("zoom-in-symbolic", Gtk.IconSize.BUTTON)
+        zoom_in.connect("clicked", lambda *_: self._adjust_font(1))
+        header.pack_start(zoom_in)
+
+        page_btn = Gtk.Button.new_from_icon_name("go-jump-symbolic", Gtk.IconSize.BUTTON)
+        page_btn.connect("clicked", self._page_dialog)
+        header.pack_end(page_btn)
+
+        title_label = Gtk.Label(label="No book loaded")
+        title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        header.set_custom_title(title_label)
+        self._title_label = title_label
+
+        self.set_titlebar(header)
+        self.add(overlay)
+
+        self._load_css()
+        self._apply_zoom()
+        self.webview.connect("load-changed", self._on_load_changed)
+
+        if epub_path:
+            self.load_book(epub_path)
+        else:
+            last = self._positions.get("_last_book")
+            if last and os.path.exists(last):
+                self.load_book(last)
+            else:
+                GLib.idle_add(self._prompt_open)
+
+        self.connect("delete-event", self._on_close)
+
+    def _build_side_button(self, icon, callback, align):
+        btn = Gtk.Button.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR)
+        btn.get_style_context().add_class("edge-button")
+        btn.set_valign(Gtk.Align.FILL)
+        btn.set_halign(align)
+        btn.set_margin_top(12)
+        btn.set_margin_bottom(12)
+        btn.set_margin_start(6)
+        btn.set_margin_end(6)
+        btn.set_focus_on_click(False)
+        btn.connect("clicked", callback)
+        return btn
+
+    def _load_css(self):
+        css = """
+        .edge-button {
+            background: rgba(0, 0, 0, 0.08);
+            border-radius: 18px;
+            padding: 18px;
+        }
+        .edge-button:hover {
+            background: rgba(0, 0, 0, 0.18);
+        }
+        """
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode("utf-8"))
+        screen = self.get_screen() or Gdk.Screen.get_default()
+        if screen:
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+
+    def _run_js(self, script, callback):
+        def _finished(webview, result, user_data):
+            try:
+                res = webview.run_javascript_finish(result)
+                value = res.get_js_value()
+                text = value.to_string() if value else None
+            except Exception:
+                text = None
+            callback(text)
+
+        self.webview.run_javascript(script, None, _finished, None)
+
+    def _load_positions(self):
+        if not os.path.exists(CONFIG_PATH):
+            return {}
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_positions(self):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        tmp_path = CONFIG_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(self._positions, fh, indent=2)
+        os.replace(tmp_path, CONFIG_PATH)
+
+    def _schedule_save(self):
+        if self._pending_save:
+            return
+        self._pending_save = GLib.timeout_add(500, self._flush_save)
+
+    def _flush_save(self):
+        self._pending_save = None
+        self._save_positions()
+        return False
+
+    def _on_scroll(self, info):
+        if not self.epub_path:
+            return
+        max_val = max(1.0, info.get("max", 1.0))
+        fraction = info.get("y", 0.0) / max_val
+        self._positions[self.epub_path] = {
+            "fraction": fraction,
+            "font_size": self.font_size,
+        }
+        self._positions["_last_book"] = self.epub_path
+        self._schedule_save()
+
+    def _on_close(self, *_):
+        if self.epub_path:
+            self._save_positions()
+        return False
+
+    def _on_load_changed(self, webview, load_event):
+        if load_event != WebKit2.LoadEvent.FINISHED:
+            return
+        self._apply_zoom()
+        self._restore_position()
+        if self._poll_id is None:
+            self._poll_id = GLib.timeout_add(1000, self._poll_scroll)
+
+    def _poll_scroll(self):
+        if not self.epub_path:
+            return True
+
+        script = "JSON.stringify({y: window.scrollY, max: document.body.scrollHeight - window.innerHeight});"
+        self._run_js(script, self._handle_scroll_info)
+        return True
+
+    def _handle_scroll_info(self, text):
+        if not text:
+            return
+        try:
+            info = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        self._on_scroll(info)
+
+    def _page_prev(self, *_):
+        self._scroll_by_page(-1)
+
+    def _page_next(self, *_):
+        self._scroll_by_page(1)
+
+    def _scroll_by_page(self, direction):
+        delta = 0.9 * direction
+        script = f"window.scrollBy(0, window.innerHeight * {delta});"
+        self._run_js(script, lambda *_: None)
+
+    def _page_dialog(self, *_):
+        if not self.epub_path:
+            return
+        script = "JSON.stringify({total: Math.max(1, Math.ceil((document.body.scrollHeight - window.innerHeight)/window.innerHeight) + 1)});"
+
+        def show_dialog(text):
+            total = 1
+            if text:
+                try:
+                    total = int(json.loads(text).get("total", 1))
+                except (ValueError, json.JSONDecodeError, TypeError):
+                    total = 1
+
+            dialog = Gtk.Dialog(title="Go to page", transient_for=self, modal=True)
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.add_button("Go", Gtk.ResponseType.OK)
+
+            spin = Gtk.SpinButton.new_with_range(1, max(1, total), 1)
+            spin.set_numeric(True)
+            box = dialog.get_content_area()
+            box.add(spin)
+            dialog.show_all()
+
+            def on_response(dlg, resp):
+                if resp == Gtk.ResponseType.OK:
+                    self._go_to_page(int(spin.get_value()))
+                dlg.destroy()
+
+            dialog.connect("response", on_response)
+
+        self._run_js(script, show_dialog)
+
+    def _go_to_page(self, page_num):
+        target = max(0, page_num - 1)
+        script = f"window.scrollTo(0, window.innerHeight * {target});"
+        self._run_js(script, lambda *_: None)
+
+    def _adjust_font(self, delta):
+        self.font_size = max(10, min(40, self.font_size + delta))
+        self._apply_zoom()
+        if self.epub_path:
+            self._positions.setdefault(self.epub_path, {})["font_size"] = self.font_size
+            self._schedule_save()
+
+    def _apply_zoom(self):
+        zoom = self.font_size / DEFAULT_FONT_SIZE
+        self.webview.set_zoom_level(zoom)
+
+    def _open_dialog(self, *_):
+        dialog = Gtk.FileChooserDialog(
+            title="Open EPUB",
+            parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Open", Gtk.ResponseType.OK)
+        filt = Gtk.FileFilter()
+        filt.set_name("EPUB files")
+        filt.add_pattern("*.epub")
+        dialog.add_filter(filt)
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            path = dialog.get_filename()
+            if path:
+                self.load_book(path)
+        dialog.destroy()
+
+    def load_book(self, epub_path):
+        epub_path = os.path.abspath(epub_path)
+        try:
+            title, html = self._load_and_prepare_epub(epub_path)
+        except Exception as exc:
+            self._title_label.set_text(f"Failed to open: {exc}")
+            return
+
+        self.epub_path = epub_path
+        self.book_title = title
+        self._title_label.set_text(title)
+        self._track_recent(epub_path)
+
+        self.webview.load_html(html, f"file://{self._book_dir}")
+
+        book_state = self._positions.get(epub_path, {})
+        self.font_size = int(book_state.get("font_size", DEFAULT_FONT_SIZE))
+        self._apply_zoom()
+
+        self._restore_position()
+
+    def _load_and_prepare_epub(self, epub_path):
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        digest = hashlib.sha256(epub_path.encode("utf-8")).hexdigest()[:16]
+        book_dir = os.path.join(CACHE_DIR, digest)
+        os.makedirs(book_dir, exist_ok=True)
+        self._book_dir = book_dir
+        return read_epub(epub_path, book_dir)
+
+    def _restore_position(self):
+        if not self.epub_path:
+            return
+        book_state = self._positions.get(self.epub_path, {})
+        fraction = book_state.get("fraction", 0.0)
+        script = (
+            "var max = document.body.scrollHeight - window.innerHeight;"
+            f"window.scrollTo(0, Math.max(0, max * {fraction}));"
+        )
+        GLib.idle_add(lambda: self._run_js(script, lambda *_: None) or False)
+
+    def _track_recent(self, epub_path):
+        recent = self._positions.get("_recent", [])
+        recent = [p for p in recent if p != epub_path]
+        recent.insert(0, epub_path)
+        self._positions["_recent"] = recent[:5]
+        self._positions["_last_book"] = epub_path
+        self._schedule_save()
+
+    def _prompt_open(self):
+        recent = [p for p in self._positions.get("_recent", []) if os.path.exists(p)]
+
+        dialog = Gtk.Dialog(title="Open an EPUB", transient_for=self, modal=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Browse", Gtk.ResponseType.OK)
+
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+
+        if recent:
+            label = Gtk.Label(label="Recent books")
+            label.set_halign(Gtk.Align.START)
+            box.add(label)
+
+            listbox = Gtk.ListBox()
+            listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+            listbox.set_activate_on_single_click(True)
+            for path in recent[:5]:
+                row = Gtk.ListBoxRow()
+                row_path = path
+                row.set_activatable(True)
+                row.set_selectable(True)
+                row.set_data("path", row_path)
+                row_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                title = Gtk.Label(label=os.path.basename(row_path))
+                title.set_halign(Gtk.Align.START)
+                subtitle = Gtk.Label(label=row_path)
+                subtitle.set_halign(Gtk.Align.START)
+                subtitle.get_style_context().add_class("dim-label")
+                row_box.pack_start(title, False, False, 0)
+                row_box.pack_start(subtitle, False, False, 0)
+                row.add(row_box)
+                listbox.add(row)
+            listbox.connect("row-activated", lambda _lb, row: self._open_recent(dialog, row.get_data("path")))
+            box.add(listbox)
+        else:
+            empty = Gtk.Label(label="No recent books yet.")
+            empty.set_halign(Gtk.Align.START)
+            box.add(empty)
+
+        dialog.show_all()
+
+        def on_response(dlg, resp):
+            if resp == Gtk.ResponseType.OK:
+                self._open_dialog()
+            dlg.destroy()
+
+        dialog.connect("response", on_response)
+        return False
+
+    def _open_recent(self, dialog, path):
+        dialog.destroy()
+        if os.path.exists(path):
+            self.load_book(path)
+
+    def _on_empty_click(self, *_):
+        if not self.epub_path:
+            self._prompt_open()
+
+
+class ReaderApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        self.connect("activate", self._on_activate)
+        self.connect("open", self._on_open)
+
+    def _on_activate(self, app):
+        if not self.props.active_window:
+            window = ReaderWindow(self)
+            window.show_all()
+
+    def _on_open(self, app, files, n_files, hint):
+        path = files[0].get_path() if files else None
+        window = ReaderWindow(self, epub_path=path)
+        window.show_all()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Jaraco Reader")
+    parser.add_argument("epub", nargs="?")
+    args = parser.parse_args()
+    app = ReaderApp()
+    if args.epub:
+        return app.run([__file__, args.epub])
+    return app.run([])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

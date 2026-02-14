@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>io.jaraco.Reader</id>
+  <name>Jaraco Reader</name>
+  <summary>Simple EPUB reader for postmarketOS</summary>
+  <description>
+    <p>A lightweight EPUB reader with adjustable font size, page navigation, and position restore.</p>
+  </description>
+  <launchable type="desktop-id">io.jaraco.Reader.desktop</launchable>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+</component>
