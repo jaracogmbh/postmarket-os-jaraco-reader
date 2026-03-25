@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            appstream \
+            desktop-file-utils \
+            gir1.2-gtk-3.0 \
+            gir1.2-webkit2-4.1 \
+            python3-gi \
+            python3-markdown \
+            xvfb
+
+      - name: Validate desktop entry
+        run: desktop-file-validate data/io.jaraco.Reader.desktop
+
+      - name: Validate appstream metadata
+        run: appstreamcli validate --no-net data/io.jaraco.Reader.appdata.xml
+
+      - name: Compile application
+        run: python3 -m py_compile app/jaraco-reader
+
+      - name: Smoke test Markdown and EPUB loading
+        run: |
+          xvfb-run -a python3 - <<'PY'
+          import importlib.util
+          import pathlib
+          import tempfile
+          import textwrap
+          import zipfile
+          from importlib.machinery import SourceFileLoader
+
+          loader = SourceFileLoader("jaraco_reader", "app/jaraco-reader")
+          spec = importlib.util.spec_from_loader(loader.name, loader)
+          module = importlib.util.module_from_spec(spec)
+          loader.exec_module(module)
+
+          with tempfile.TemporaryDirectory() as tmpdir:
+              tmp = pathlib.Path(tmpdir)
+
+              markdown_path = tmp / "sample.md"
+              markdown_path.write_text(
+                  textwrap.dedent(
+                      """\
+                      # Sample Markdown
+
+                      ```mermaid
+                      graph TD;
+                        A-->B;
+                      ```
+                      """
+                  ),
+                  encoding="utf-8",
+              )
+
+              title, html = module.read_markdown(str(markdown_path))
+              assert title == "sample.md"
+              assert '<div class="mermaid">' in html
+              assert "Sample Markdown" in html
+
+              epub_path = tmp / "sample.epub"
+              with zipfile.ZipFile(epub_path, "w") as zf:
+                  zf.writestr(
+                      "META-INF/container.xml",
+                      textwrap.dedent(
+                          """\
+                          <?xml version="1.0" encoding="UTF-8"?>
+                          <container version="1.0"
+                              xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+                            <rootfiles>
+                              <rootfile full-path="OPS/content.opf"
+                                  media-type="application/oebps-package+xml"/>
+                            </rootfiles>
+                          </container>
+                          """
+                      ),
+                  )
+                  zf.writestr(
+                      "OPS/content.opf",
+                      textwrap.dedent(
+                          """\
+                          <?xml version="1.0" encoding="utf-8"?>
+                          <package version="3.0" xmlns="http://www.idpf.org/2007/opf">
+                            <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                              <dc:title>Sample Book</dc:title>
+                            </metadata>
+                            <manifest>
+                              <item id="chap1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+                            </manifest>
+                            <spine>
+                              <itemref idref="chap1"/>
+                            </spine>
+                          </package>
+                          """
+                      ),
+                  )
+                  zf.writestr(
+                      "OPS/chapter1.xhtml",
+                      textwrap.dedent(
+                          """\
+                          <!doctype html>
+                          <html xmlns="http://www.w3.org/1999/xhtml">
+                          <head><title>Chapter 1</title></head>
+                          <body><h1>Chapter 1</h1><p>Hello from EPUB.</p></body>
+                          </html>
+                          """
+                      ),
+                  )
+
+              extract_dir = tmp / "extract"
+              extract_dir.mkdir()
+              title, html = module.read_epub(str(epub_path), str(extract_dir))
+              assert title == "Sample Book"
+              assert "Chapter 1" in html
+              assert "Hello from EPUB." in html
+          PY

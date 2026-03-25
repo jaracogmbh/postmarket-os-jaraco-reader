@@ -4,7 +4,7 @@
 pkgname=jaraco-reader
 pkgver=0.1.0
 pkgrel=11
-pkgdesc="Simple EPUB reader for postmarketOS"
+pkgdesc="Simple EPUB and Markdown reader for postmarketOS"
 url="https://example.invalid/jaraco-reader"
 arch="noarch"
 license="MIT"
@@ -13,6 +13,7 @@ makedepends=""
 source=""
 builddir="$startdir"
 options="!check"
+install="$pkgname.post-install"
 
 package() {
 	install -Dm755 "$startdir/app/jaraco-reader" "$pkgdir/usr/bin/jaraco-reader"

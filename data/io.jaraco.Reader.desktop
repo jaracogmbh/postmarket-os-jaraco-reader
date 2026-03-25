@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Jaraco Reader
-Comment=Simple EPUB reader
+Comment=Simple EPUB and Markdown reader
 Exec=jaraco-reader %U
 Icon=io.jaraco.Reader
 Terminal=false
 Categories=Office;Viewer;
-MimeType=application/epub+zip;
+MimeType=application/epub+zip;text/markdown;text/x-markdown;
 StartupNotify=true

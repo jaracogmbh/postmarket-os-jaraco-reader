@@ -2,10 +2,15 @@
 <component type="desktop">
   <id>io.jaraco.Reader</id>
   <name>Jaraco Reader</name>
-  <summary>Simple EPUB reader for postmarketOS</summary>
+  <summary>Simple EPUB and Markdown reader for postmarketOS</summary>
   <description>
-    <p>A lightweight EPUB reader with adjustable font size, page navigation, and position restore.</p>
+    <p>A lightweight EPUB and Markdown reader with adjustable font size, page navigation, and position restore.</p>
   </description>
+  <provides>
+    <mime-type>application/epub+zip</mime-type>
+    <mime-type>text/markdown</mime-type>
+    <mime-type>text/x-markdown</mime-type>
+  </provides>
   <launchable type="desktop-id">io.jaraco.Reader.desktop</launchable>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>

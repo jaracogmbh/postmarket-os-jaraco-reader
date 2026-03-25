@@ -85,7 +85,14 @@ If launched without a file, the app shows a recent list (max 5) and a Browse but
 Markdown Mermaid diagrams are rendered offline via a bundled `mermaid.min.js`.
 
 To enable full Mermaid rendering, replace `data/mermaid.min.js` with the official
-minified Mermaid build from the Mermaid releases page before building.
+minified Mermaid build before building. You can download it with:
+
+```bash
+curl -L -o data/mermaid.min.js \
+  "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"
+```
+
+Markdown rendering requires the `py3-markdown` package (included in the APK dependencies).
 
 ## Data Storage
 

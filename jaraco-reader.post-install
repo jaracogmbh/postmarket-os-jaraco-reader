@@ -1,0 +1,11 @@
+#!/bin/sh
+
+desktop_id="io.jaraco.Reader.desktop"
+
+if command -v xdg-mime >/dev/null 2>&1; then
+  xdg-mime default "$desktop_id" application/epub+zip text/markdown text/x-markdown || true
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database >/dev/null 2>&1 || true
+fi
