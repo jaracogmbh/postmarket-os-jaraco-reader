@@ -1,17 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<component type="desktop">
+<component type="desktop-application">
   <id>io.jaraco.Reader</id>
   <name>Jaraco Reader</name>
   <summary>Simple EPUB and Markdown reader for postmarketOS</summary>
   <description>
     <p>A lightweight EPUB and Markdown reader with adjustable font size, page navigation, and position restore.</p>
   </description>
+  <developer id="com.github.jaracogmbh">
+    <name>Jaraco GmbH</name>
+  </developer>
   <provides>
-    <mime-type>application/epub+zip</mime-type>
-    <mime-type>text/markdown</mime-type>
-    <mime-type>text/x-markdown</mime-type>
+    <mediatype>application/epub+zip</mediatype>
+    <mediatype>text/markdown</mediatype>
+    <mediatype>text/x-markdown</mediatype>
   </provides>
   <launchable type="desktop-id">io.jaraco.Reader.desktop</launchable>
+  <url type="homepage">https://github.com/jaracogmbh/postmarket-os-jaraco-reader</url>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">none</content_attribute>
+  </content_rating>
 </component>

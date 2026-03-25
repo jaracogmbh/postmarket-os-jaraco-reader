@@ -82,6 +82,38 @@ Replace the filename if your build produced a different `-rX` revision.
 
 If launched without a file, the app shows a recent list (max 5) and a Browse button. It supports `.epub`, `.md`, and `.markdown`.
 
+You can also open Markdown files directly:
+
+```bash
+./app/jaraco-reader /path/to/notes.md
+```
+
+## Markdown And Mermaid Support
+
+Jaraco Reader can render Markdown files to HTML inside the embedded WebKit view.
+This makes it useful for technical notes, documentation, and diagrams in addition
+to EPUB books.
+
+Supported Markdown features include:
+
+- Headings, paragraphs, and lists
+- Fenced code blocks
+- Tables
+- Table of contents generation
+- Mermaid code blocks rendered as diagrams
+
+Use Mermaid in Markdown like this:
+
+````markdown
+# Example
+
+```mermaid
+flowchart TD
+    A[Start] --> B[Read Markdown]
+    B --> C[Render Mermaid]
+```
+````
+
 Markdown Mermaid diagrams are rendered offline via a bundled `mermaid.min.js`.
 
 To enable full Mermaid rendering, replace `data/mermaid.min.js` with the official
